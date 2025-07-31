@@ -48,53 +48,32 @@ class CrossLingualAnalyzer:
         Returns:
             相似性分析结果
         """
+        # 计算语言中心向量
         centroids = self.compute_language_centroids(features, languages)
         unique_langs = sorted(centroids.keys())
         
-        # 构建中心向量矩阵
-        centroid_matrix = np.array([centroids[lang] for lang in unique_langs])
+        # 计算语言间相似性矩阵
+        similarity_matrix = np.zeros((len(unique_langs), len(unique_langs)))
+        for i, lang1 in enumerate(unique_langs):
+            for j, lang2 in enumerate(unique_langs):
+                sim = cosine_similarity([centroids[lang1]], [centroids[lang2]])[0, 0]
+                similarity_matrix[i, j] = sim
         
-        # 计算相似性矩阵
-        similarity_matrix = cosine_similarity(centroid_matrix)
-        distance_matrix = euclidean_distances(centroid_matrix)
+        # 计算平均相似性指标
+        upper_triangle = np.triu(similarity_matrix, k=1)
+        avg_similarity = np.mean(upper_triangle[upper_triangle > 0])
         
-        # 计算平均相似性和距离
-        n_langs = len(unique_langs)
-        upper_triangle_indices = np.triu_indices(n_langs, k=1)
-        
-        similarities = similarity_matrix[upper_triangle_indices]
-        distances = distance_matrix[upper_triangle_indices]
-        
-        results = {
-            'language_pairs': [(unique_langs[i], unique_langs[j]) 
-                             for i, j in zip(*upper_triangle_indices)],
-            'similarity_matrix': similarity_matrix,
-            'distance_matrix': distance_matrix,
-            'language_names': unique_langs,
-            'avg_similarity': float(np.mean(similarities)),
-            'std_similarity': float(np.std(similarities)),
-            'min_similarity': float(np.min(similarities)),
-            'max_similarity': float(np.max(similarities)),
-            'avg_distance': float(np.mean(distances)),
-            'std_distance': float(np.std(distances)),
-            'min_distance': float(np.min(distances)),
-            'max_distance': float(np.max(distances))
+        return {
+            'languages': unique_langs,
+            'centroid_similarity_matrix': similarity_matrix,
+            'average_cross_lingual_similarity': float(avg_similarity),
+            'max_similarity': float(np.max(upper_triangle[upper_triangle < 1])),
+            'min_similarity': float(np.min(upper_triangle[upper_triangle > 0]))
         }
-        
-        # 找出最相似和最不相似的语言对
-        min_sim_idx = np.argmin(similarities)
-        max_sim_idx = np.argmax(similarities)
-        
-        results['most_similar_pair'] = results['language_pairs'][max_sim_idx]
-        results['least_similar_pair'] = results['language_pairs'][min_sim_idx]
-        results['most_similar_score'] = float(similarities[max_sim_idx])
-        results['least_similar_score'] = float(similarities[min_sim_idx])
-        
-        return results
     
     def analyze_language_clusters(self, features: np.ndarray, languages: List[str], n_clusters: int = 3) -> Dict[str, Any]:
         """
-        分析语言聚类模式
+        分析语言聚类情况
         
         Args:
             features: 特征矩阵
@@ -104,87 +83,66 @@ class CrossLingualAnalyzer:
         Returns:
             聚类分析结果
         """
+        from sklearn.metrics import adjusted_rand_score, silhouette_score
+        
         # 执行K-means聚类
-        kmeans = KMeans(n_clusters=n_clusters, random_state=self.random_seed)
+        kmeans = KMeans(n_clusters=n_clusters, random_state=self.random_seed, n_init=10)
         cluster_labels = kmeans.fit_predict(features)
         
-        # 分析每个聚类的语言分布
-        cluster_analysis = {}
+        # 创建语言到聚类的映射
         unique_langs = sorted(set(languages))
+        lang_to_cluster = {}
+        for lang in unique_langs:
+            indices = [i for i, l in enumerate(languages) if l == lang]
+            # 使用该语言样本的聚类标签众数
+            clusters = [cluster_labels[i] for i in indices]
+            lang_to_cluster[lang] = max(set(clusters), key=clusters.count)
         
-        for cluster_id in range(n_clusters):
-            cluster_indices = np.where(cluster_labels == cluster_id)[0]
-            cluster_languages = [languages[i] for i in cluster_indices]
-            
-            # 统计每种语言在该聚类中的数量
-            lang_counts = {}
-            for lang in cluster_languages:
-                lang_counts[lang] = lang_counts.get(lang, 0) + 1
-            
-            cluster_analysis[f'cluster_{cluster_id}'] = {
-                'size': len(cluster_indices),
-                'language_distribution': lang_counts,
-                'dominant_language': max(lang_counts.items(), key=lambda x: x[1])[0] if lang_counts else None
-            }
+        # 计算真实语言标签
+        lang_to_idx = {lang: idx for idx, lang in enumerate(unique_langs)}
+        true_labels = [lang_to_idx[lang] for lang in languages]
         
-        # 计算语言混合度（衡量不同语言在聚类中的分布均匀性）
-        mixing_scores = []
-        for cluster_id in range(n_clusters):
-            cluster_info = cluster_analysis[f'cluster_{cluster_id}']
-            lang_dist = cluster_info['language_distribution']
-            if len(lang_dist) > 1:
-                # 计算熵作为混合度指标
-                total = sum(lang_dist.values())
-                probs = [count/total for count in lang_dist.values()]
-                entropy = -sum(p * np.log2(p) for p in probs if p > 0)
-                mixing_scores.append(entropy)
-            else:
-                mixing_scores.append(0.0)
-        
-        results = {
-            'cluster_labels': cluster_labels.tolist(),
-            'cluster_analysis': cluster_analysis,
-            'n_clusters': n_clusters,
-            'mixing_scores': mixing_scores,
-            'avg_mixing_score': float(np.mean(mixing_scores)),
-            'silhouette_score': self._compute_silhouette_score(features, cluster_labels)
-        }
-        
-        return results
-    
-    def _compute_silhouette_score(self, features: np.ndarray, labels: np.ndarray) -> float:
-        """计算轮廓系数"""
-        from sklearn.metrics import silhouette_score
+        # 计算聚类评估指标
         try:
-            return float(silhouette_score(features, labels))
+            ari_score = adjusted_rand_score(true_labels, cluster_labels)
+            sil_score = silhouette_score(features, cluster_labels)
         except:
-            return 0.0
+            ari_score = 0.0
+            sil_score = 0.0
+        
+        return {
+            'n_clusters': n_clusters,
+            'cluster_labels': cluster_labels.tolist(),
+            'language_to_cluster': lang_to_cluster,
+            'adjusted_rand_index': float(ari_score),
+            'silhouette_score': float(sil_score),
+            'cluster_centers': kmeans.cluster_centers_.tolist()
+        }
     
     def compare_intra_vs_inter_language_distances(self, features: np.ndarray, languages: List[str]) -> Dict[str, Any]:
         """
-        比较语言内距离和语言间距离
+        比较语言内部和语言间的距离分布
         
         Args:
             features: 特征矩阵
             languages: 语言标签列表
             
         Returns:
-            距离比较分析结果
+            距离比较结果
         """
         unique_langs = sorted(set(languages))
         intra_distances = []
         inter_distances = []
         
-        # 计算语言内距离
+        # 计算语言内部距离
         for lang in unique_langs:
             indices = [i for i, l in enumerate(languages) if l == lang]
             if len(indices) > 1:
                 lang_features = features[indices]
-                # 计算该语言内所有样本对的距离
-                for i in range(len(indices)):
-                    for j in range(i+1, len(indices)):
-                        dist = euclidean_distances([lang_features[i]], [lang_features[j]])[0][0]
-                        intra_distances.append(dist)
+                distances = euclidean_distances(lang_features, lang_features)
+                # 获取上三角矩阵（不包括对角线）
+                mask = np.triu(np.ones(distances.shape, dtype=bool), k=1)
+                intra_distances.extend(distances[mask])
         
         # 计算语言间距离
         for i, lang1 in enumerate(unique_langs):
@@ -193,40 +151,70 @@ class CrossLingualAnalyzer:
                     indices1 = [idx for idx, l in enumerate(languages) if l == lang1]
                     indices2 = [idx for idx, l in enumerate(languages) if l == lang2]
                     
-                    # 计算两种语言间所有样本对的距离
-                    for idx1 in indices1:
-                        for idx2 in indices2:
-                            dist = euclidean_distances([features[idx1]], [features[idx2]])[0][0]
-                            inter_distances.append(dist)
+                    if len(indices1) > 0 and len(indices2) > 0:
+                        features1 = features[indices1]
+                        features2 = features[indices2]
+                        distances = euclidean_distances(features1, features2)
+                        inter_distances.extend(distances.flatten())
         
-        # 统计分析
-        intra_distances = np.array(intra_distances)
-        inter_distances = np.array(inter_distances)
+        # 转换为numpy数组并处理空数组
+        intra_distances = np.array(intra_distances) if intra_distances else np.array([])
+        inter_distances = np.array(inter_distances) if inter_distances else np.array([])
+        
+        # 安全的统计计算函数
+        def safe_mean(arr):
+            return float(np.nanmean(arr)) if len(arr) > 0 else 0.0
+            
+        def safe_std(arr):
+            return float(np.nanstd(arr)) if len(arr) > 1 else 0.0
+            
+        def safe_median(arr):
+            return float(np.nanmedian(arr)) if len(arr) > 0 else 0.0
+            
+        def safe_effect_size(inter_dist, intra_dist):
+            try:
+                if len(inter_dist) > 0 and len(intra_dist) > 0:
+                    mean_diff = np.nanmean(inter_dist) - np.nanmean(intra_dist)
+                    pooled_var = (np.nanvar(inter_dist) + np.nanvar(intra_dist)) / 2
+                    if pooled_var > 0:
+                        return float(mean_diff / np.sqrt(pooled_var))
+                return 0.0
+            except:
+                return 0.0
         
         # 执行统计检验
-        statistic, p_value = mannwhitneyu(intra_distances, inter_distances, alternative='two-sided')
-        
+        try:
+            if len(intra_distances) > 1 and len(inter_distances) > 1:
+                with np.errstate(all='ignore'):  # 忽略数值警告
+                    statistic, p_value = mannwhitneyu(intra_distances, inter_distances, alternative='two-sided')
+                    significant = bool(p_value < 0.05)  # 确保是Python布尔值
+            else:
+                statistic, p_value, significant = np.nan, np.nan, False
+                logger.warning("Sample size too small for statistical testing")
+        except Exception as e:
+            logger.warning(f"Statistical test failed: {e}")
+            statistic, p_value, significant = np.nan, np.nan, False
+
         results = {
             'intra_language_distances': {
-                'mean': float(np.mean(intra_distances)),
-                'std': float(np.std(intra_distances)),
-                'median': float(np.median(intra_distances)),
+                'mean': safe_mean(intra_distances),
+                'std': safe_std(intra_distances),
+                'median': safe_median(intra_distances),
                 'count': len(intra_distances)
             },
             'inter_language_distances': {
-                'mean': float(np.mean(inter_distances)),
-                'std': float(np.std(inter_distances)),
-                'median': float(np.median(inter_distances)),
+                'mean': safe_mean(inter_distances),
+                'std': safe_std(inter_distances),
+                'median': safe_median(inter_distances),
                 'count': len(inter_distances)
             },
             'statistical_test': {
                 'test': 'Mann-Whitney U',
-                'statistic': float(statistic),
-                'p_value': float(p_value),
-                'significant': p_value < 0.05
+                'statistic': float(statistic) if not np.isnan(statistic) else None,
+                'p_value': float(p_value) if not np.isnan(p_value) else None,
+                'significant': significant
             },
-            'effect_size': float((np.mean(inter_distances) - np.mean(intra_distances)) / 
-                               np.sqrt((np.var(inter_distances) + np.var(intra_distances)) / 2))
+            'effect_size': safe_effect_size(inter_distances, intra_distances)
         }
         
         return results
@@ -278,6 +266,7 @@ class CrossLingualAnalyzer:
             output_path: 输出文件路径
         """
         import json
+        import warnings
         
         # 转换numpy数组为列表以便JSON序列化
         def convert_numpy(obj):
@@ -287,14 +276,26 @@ class CrossLingualAnalyzer:
                 return int(obj)
             elif isinstance(obj, np.floating):
                 return float(obj)
+            elif isinstance(obj, np.bool_):  # 添加布尔类型处理
+                return bool(obj)
             elif isinstance(obj, dict):
                 return {key: convert_numpy(value) for key, value in obj.items()}
             elif isinstance(obj, list):
                 return [convert_numpy(item) for item in obj]
+            elif hasattr(obj, 'item'):  # 处理其他numpy标量类型
+                try:
+                    return obj.item()
+                except (ValueError, TypeError):
+                    return str(obj)
+            elif isinstance(obj, (int, float, complex)) and np.isnan(obj):
+                return None  # 将NaN转换为null
             else:
                 return obj
         
-        serializable_report = convert_numpy(report)
+        # 抑制警告并处理特殊值
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            serializable_report = convert_numpy(report)
         
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(serializable_report, f, indent=2, ensure_ascii=False)
