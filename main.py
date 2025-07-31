@@ -55,7 +55,14 @@ class NERCrossLingualAnalysis:
         """加载数据"""
         logger.info("Loading data...")
         
-        if self.args.use_real_data:
+        # 使用配置文件中的设置，命令行参数可以覆盖配置
+        use_real_data = experiment_config.use_real_data
+        if hasattr(self.args, 'use_real_data') and self.args.use_real_data is not None:
+            use_real_data = self.args.use_real_data
+        elif hasattr(self.args, 'use_test_data') and self.args.use_test_data:
+            use_real_data = False
+        
+        if use_real_data:
             # 加载真实数据
             samples = self.data_loader.load_retri_data(
                 split="train", 
@@ -151,23 +158,30 @@ class NERCrossLingualAnalysis:
         
         similarity_info = analysis_report['cross_lingual_similarity']
         print(f"\nCross-lingual Similarity:")
-        print(f"  Average similarity: {similarity_info['avg_similarity']:.4f}")
-        print(f"  Most similar pair: {similarity_info['most_similar_pair']} ({similarity_info['most_similar_score']:.4f})")
-        print(f"  Least similar pair: {similarity_info['least_similar_pair']} ({similarity_info['least_similar_score']:.4f})")
+        print(f"  Average similarity: {similarity_info['average_cross_lingual_similarity']:.4f}")
+        print(f"  Max similarity: {similarity_info['max_similarity']:.4f}")
+        print(f"  Min similarity: {similarity_info['min_similarity']:.4f}")
         
         distance_info = analysis_report['distance_comparison']
         print(f"\nDistance Analysis:")
         print(f"  Intra-language distance: {distance_info['intra_language_distances']['mean']:.4f} ± {distance_info['intra_language_distances']['std']:.4f}")
         print(f"  Inter-language distance: {distance_info['inter_language_distances']['mean']:.4f} ± {distance_info['inter_language_distances']['std']:.4f}")
-        print(f"  Statistical significance: {'Yes' if distance_info['statistical_test']['significant'] else 'No'} (p={distance_info['statistical_test']['p_value']:.4f})")
+        
+        stat_test = distance_info['statistical_test']
+        if stat_test['p_value'] is not None:
+            print(f"  Statistical significance: {'Yes' if stat_test['significant'] else 'No'} (p={stat_test['p_value']:.4f})")
+        else:
+            print(f"  Statistical significance: Not available (insufficient data)")
         
         print(f"\nResult files saved in: {experiment_config.results_dir}")
         print("="*60)
 
 def main():
     parser = argparse.ArgumentParser(description="NER Cross-lingual Representation Analysis")
-    parser.add_argument("--use-real-data", action="store_true", 
-                       help="Use real data from Retri_data instead of test samples")
+    parser.add_argument("--use-real-data", action="store_true", default=None,
+                       help="Use real data from Retri_data instead of test samples (overrides config)")
+    parser.add_argument("--use-test-data", action="store_true", default=None,
+                       help="Use test samples instead of real data (overrides config)")
     parser.add_argument("--base-model", type=str, default=None,
                        help="Override base model path")
     parser.add_argument("--max-samples", type=int, default=100,
@@ -188,6 +202,14 @@ def main():
         experiment_config.output_dir = args.output_dir
     if args.results_dir:
         experiment_config.results_dir = args.results_dir
+    
+    # 处理数据源配置的优先级：命令行参数 > 配置文件
+    if args.use_real_data:
+        args.use_real_data = True
+    elif args.use_test_data:
+        args.use_real_data = False
+    else:
+        args.use_real_data = None  # 使用配置文件中的默认值
     
     # 创建分析器实例
     analyzer = NERCrossLingualAnalysis(args)

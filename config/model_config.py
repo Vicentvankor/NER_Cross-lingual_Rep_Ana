@@ -57,6 +57,11 @@ class ExperimentConfig:
     # 分析结果目录，用于保存可视化图表和分析报告
     results_dir: str = "results"
     
+    # 数据源配置：是否使用真实数据
+    # True: 使用真实的JSONL数据文件进行分析
+    # False: 使用内置的测试样本进行快速验证
+    use_real_data: bool = True
+    
     # 支持的语言列表，None表示使用默认的8种语言
     supported_languages: List[str] = None
     
